@@ -1,0 +1,12 @@
+{
+  "extends": "../deepseek-harness/tsconfig.base.json",
+  "compilerOptions": {
+    "composite": false,
+    "paths": {}
+  },
+  "include": [
+    "src",
+    "tests",
+    "vitest.config.ts"
+  ]
+}

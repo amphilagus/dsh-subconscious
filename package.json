@@ -1,0 +1,55 @@
+{
+  "name": "@amphilagus/dsh-subconscious",
+  "description": "Out-of-tree DSH bundle: a synchronous view tool that returns purpose-summarized file observations from a subconscious subagent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "lib/index.mjs",
+  "types": "lib/index.d.mts",
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  },
+  "exports": {
+    ".": {
+      "types": "./lib/index.d.mts",
+      "default": "./lib/index.mjs"
+    },
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./src/*": "./src/*",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "cordis.patch.yml",
+    "preset",
+    "LICENSE",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsdown",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "link-dsh": "bash scripts/link-dsh.sh",
+    "install-profile": "bash scripts/install-profile.sh"
+  },
+  "license": "MIT",
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "*",
+    "@deepseek-ai/dsh-agent": "*",
+    "@deepseek-ai/dsh-llm": "*",
+    "@deepseek-ai/dsh-subagent": "*",
+    "@deepseek-ai/dsh-system-prompt": "*",
+    "@deepseek-ai/dsh-tools": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^26.2.0",
+    "tsdown": "0.22.2",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.8"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "cordis.patch.yml"
+    }
+  }
+}

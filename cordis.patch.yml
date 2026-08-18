@@ -1,0 +1,7 @@
+# dsh-subconscious bundle patch: insert an inert entry (enabled: false).
+# The 双重意识 preset remounts this plugin with enabled: true.
+- insert:
+    - id: subconscious
+      name: '@amphilagus/dsh-subconscious'
+      config:
+        enabled: false
