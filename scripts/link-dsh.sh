@@ -20,6 +20,7 @@ fi
 mkdir -p node_modules/@deepseek-ai
 
 ln -sfn "$H/vendor/cordis" node_modules/@deepseek-ai/cordis
+ln -sfn "$H/packages/core/scope" node_modules/@deepseek-ai/dsh-scope
 ln -sfn "$H/packages/core/tools" node_modules/@deepseek-ai/dsh-tools
 ln -sfn "$H/packages/llm/llm" node_modules/@deepseek-ai/dsh-llm
 ln -sfn "$H/packages/core/system-prompt" node_modules/@deepseek-ai/dsh-system-prompt

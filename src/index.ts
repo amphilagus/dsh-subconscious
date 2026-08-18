@@ -4,9 +4,15 @@
  * preset remounts this plugin with `enabled: true`.
  *
  * `view` is registered on this plugin context (the preset standing layer in
- * production). Per-agent `agent.ctx` registrations are invisible to the
- * model-facing catalog assembled from the standing scope chain; literature
- * tools work because they register here, not on `agent/created`.
+ * production). Per-agent `agent.ctx` tool rows are invisible to the
+ * model-facing catalog; literature tools work because they register here.
+ *
+ * Hiding `read`/`grep` cannot rely on empty `tool:<name>` sections or on
+ * `tools.restrict()` succeeding. In a preset deployment those tools live on
+ * the standing ancestor layer; an empty nearest-scope section is dropped at
+ * render without replacing the standing band, and `restrict()` can throw
+ * (or no-op) if the name is not yet restrictable. The authoritative cut is
+ * `system-prompt/assemble`, which is what the model request actually uses.
  *
  * @module @amphilagus/dsh-subconscious
  */
@@ -14,7 +20,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type {} from '@deepseek-ai/dsh-subagent'
-import type {} from '@deepseek-ai/dsh-system-prompt'
+import type { AssembleContext, PromptAssembly } from '@deepseek-ai/dsh-system-prompt'
 import { resolveConfig } from './config.ts'
 import type { Config } from './config.ts'
 import { CONSCIOUS_DENY_TOOLS, PLUGIN_NAME } from './constants.ts'
@@ -45,29 +51,61 @@ export const name = PLUGIN_NAME
 /** Services required before the plugin can load. */
 export const inject = ['tools', 'systemPrompt', 'subagents', 'agents']
 
-function denyExisting(agent: Agent, names: readonly string[]): void {
-  const deny = names.filter(toolName => agent.ctx.tools.get(toolName, agent) !== undefined)
-  if (deny.length === 0) return
-  agent.ctx.tools.restrict({ deny })
+function isRootAgent(ctx: Context, agent: Agent): boolean {
+  return ctx.agents.roots().includes(agent)
 }
 
-/** Nearest-scope empty section drops an inherited `tool:<name>` guidance band. */
-function blankToolSections(agent: Agent, toolNames: readonly string[]): void {
-  for (const toolName of toolNames) {
-    agent.ctx.systemPrompt.section({ name: `tool:${toolName}`, order: 100, text: '' })
+function assemblingAgent(ctx: Context, context: AssembleContext): Agent | undefined {
+  if (context.agent !== undefined) return context.agent
+  const scope = context.scope
+  if (scope === undefined) return undefined
+  return ctx.agents.list().find(agent => agent === scope)
+}
+
+function viewGuidance(viewToolName: string): string {
+  return (
+    `Use ${viewToolName} to inspect file contents. It is exclusive — you cannot run other tools until it returns. `
+    + 'background is your mental state before opening the files; purpose is what this glance must answer. '
+    + 'You receive a bounded summary, not the raw file.'
+  )
+}
+
+function hideToolNames(ctx: Context, agent: Agent, viewToolName: string): Set<string> {
+  if (isRootAgent(ctx, agent)) return new Set(CONSCIOUS_DENY_TOOLS)
+  return new Set([viewToolName])
+}
+
+function shapeAssembly(
+  assembly: PromptAssembly,
+  hide: ReadonlySet<string>,
+  viewToolName: string,
+  injectView: boolean,
+): PromptAssembly {
+  const sections = assembly.sections.filter((section) => {
+    if (!section.name.startsWith('tool:')) return true
+    return !hide.has(section.name.slice('tool:'.length))
+  })
+  if (injectView) {
+    const sectionName = `tool:${viewToolName}`
+    if (!sections.some(section => section.name === sectionName)) {
+      sections.push({ name: sectionName, text: viewGuidance(viewToolName) })
+    }
+  }
+  return {
+    ...assembly,
+    sections,
+    tools: assembly.tools.filter(tool => !hide.has(tool.name)),
   }
 }
 
-function installRootGuidance(agent: Agent, config: ReturnType<typeof resolveConfig>): void {
-  blankToolSections(agent, CONSCIOUS_DENY_TOOLS)
-  agent.ctx.systemPrompt.section({
-    name: `tool:${config.viewToolName}`,
-    order: 101,
-    text:
-      `Use ${config.viewToolName} to inspect file contents. It is exclusive — you cannot run other tools until it returns. `
-      + 'background is your mental state before opening the files; purpose is what this glance must answer. '
-      + 'You receive a bounded summary, not the raw file.',
-  })
+function tryRestrict(agent: Agent, names: readonly string[]): void {
+  const deny = names.filter(toolName => agent.ctx.tools.get(toolName, agent) !== undefined)
+  if (deny.length === 0) return
+  try {
+    agent.ctx.tools.restrict({ deny })
+  } catch {
+    // Standing-plane names can fail restrict(); assemble filtering is authoritative.
+  }
 }
 
 /**
@@ -86,21 +124,20 @@ export function apply(ctx: Context, config: Config = {}): void {
   registerContentReadGuard(ctx, resolved)
   registerViewTool(ctx, ctx, resolved)
 
-  const prompted = new WeakSet<Agent>()
+  ctx.on('system-prompt/assemble', async (_assembly, context, next) => {
+    const assembled = await next()
+    const agent = assemblingAgent(ctx, context)
+    if (agent === undefined) return assembled
+    const hide = hideToolNames(ctx, agent, resolved.viewToolName)
+    return shapeAssembly(assembled, hide, resolved.viewToolName, isRootAgent(ctx, agent))
+  })
+
   const mask = ({ agent }: { agent: Agent }): void => {
-    if (ctx.agents.roots().includes(agent)) {
-      denyExisting(agent, CONSCIOUS_DENY_TOOLS)
-      if (!prompted.has(agent)) {
-        prompted.add(agent)
-        installRootGuidance(agent, resolved)
-      }
+    if (isRootAgent(ctx, agent)) {
+      tryRestrict(agent, CONSCIOUS_DENY_TOOLS)
       return
     }
-    denyExisting(agent, [resolved.viewToolName])
-    if (!prompted.has(agent)) {
-      prompted.add(agent)
-      blankToolSections(agent, [resolved.viewToolName])
-    }
+    tryRestrict(agent, [resolved.viewToolName])
   }
   ctx.on('agent/created', mask)
   // tool-fs may settle after the first created observer; session-start retries the mask.

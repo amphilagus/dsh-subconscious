@@ -4,7 +4,7 @@ import type { ResolvedConfig } from './config.ts'
 import { looksLikeFileContentReadCommand } from './shell-read.ts'
 
 const SHELL_TOOLS = new Set(['bash', 'pwsh'])
-const CONTENT_TOOLS = new Set(['read', 'grep'])
+const CONTENT_TOOLS = new Set(['read', 'grep', 'read_image'])
 
 function shellCommandOf(execution: { arguments: unknown }): string | undefined {
   const args = execution.arguments

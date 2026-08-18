@@ -33,5 +33,5 @@ export const VIEW_TIMEOUT_MS = 10 * 60 * 1000
 /** Tools the inner reader may see. */
 export const SUBCONSCIOUS_TOOL_ALLOW = ['read', 'grep', 'glob'] as const
 
-/** Content-reading tools hidden from the conscious agent prompt. */
-export const CONSCIOUS_DENY_TOOLS = ['read', 'grep'] as const
+/** Content-reading tools hidden from the conscious agent catalog and prompt. */
+export const CONSCIOUS_DENY_TOOLS = ['read', 'grep', 'read_image'] as const

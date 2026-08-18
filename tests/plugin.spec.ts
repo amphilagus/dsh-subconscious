@@ -8,9 +8,10 @@ import { describe, expect, it, vi } from 'vitest'
 import { Context, Service } from '@deepseek-ai/cordis'
 import AgentLoop from '@deepseek-ai/dsh-agent-loop'
 import { mountAgentLoopTestDependencies } from '@deepseek-ai/dsh-agent-loop-testkit'
-import type { Agent } from '@deepseek-ai/dsh-agent'
+import { assembleContextFor, type Agent } from '@deepseek-ai/dsh-agent'
 import { CallId } from '@deepseek-ai/dsh-llm'
 import { SessionId } from '@deepseek-ai/dsh-session'
+import { bindScopeParent, createScope, scopeOf } from '@deepseek-ai/dsh-scope'
 import { renderPrompt } from '@deepseek-ai/dsh-system-prompt'
 import type { SubagentResult, SubagentRun, SubagentStartRequest } from '@deepseek-ai/dsh-subagent'
 import { defineTool } from '@deepseek-ai/dsh-tools'
@@ -197,6 +198,54 @@ describe('subconscious plugin', () => {
     const childPrompt = await assembledPrompt(ctx, child.agent)
     expect(childPrompt).not.toContain('Use view')
     expect(childPrompt).toContain('Use the read tool')
+
+    await child.dispose()
+    await root.dispose()
+    await ctx.fiber.dispose()
+  })
+
+  it('strips standing-plane read/grep from a joined root assembly', async () => {
+    const ctx = new Context()
+    await mountAgentLoopTestDependencies(ctx)
+    await ctx.plugin(MockSubagents)
+    await ctx.plugin(AgentLoop, { agents: [] })
+
+    const standingKey = { id: 'standing-double-conscious' }
+    let standingCtx!: Context
+    await ctx.plugin(Object.assign((inner: Context) => {
+      standingCtx = createScope(inner, standingKey).ctx
+    }, { inject: ['tools', 'systemPrompt', 'subagents', 'agents'] }))
+
+    registerCatalog(standingCtx)
+    await standingCtx.plugin(subconscious, { enabled: true })
+
+    const root = await ctx.agents.create({
+      sessionId: SessionId('standing-root'),
+      setup: (agentCtx) => {
+        bindScopeParent(scopeOf(agentCtx)!, standingKey)
+      },
+    })
+
+    const assembly = await ctx.systemPrompt.assemble(assembleContextFor(root.agent))
+    const prompt = renderPrompt(assembly)
+    expect(assembly.tools.map(tool => tool.name).sort()).toEqual(['bash', 'glob', 'view', 'write'])
+    expect(prompt).not.toContain('Use the read tool')
+    expect(prompt).not.toContain('Use the grep tool')
+    expect(prompt).toContain('Use view to inspect file contents')
+
+    const child = await root.agent.ctx.agents.create({
+      sessionId: SessionId('standing-child'),
+      meta: { origin: 'subagent', delegationDepth: 1 },
+      setup: (agentCtx) => {
+        bindScopeParent(scopeOf(agentCtx)!, standingKey)
+      },
+    })
+    const childAssembly = await ctx.systemPrompt.assemble(assembleContextFor(child.agent))
+    const childPrompt = renderPrompt(childAssembly)
+    expect(childAssembly.tools.map(tool => tool.name)).toContain('read')
+    expect(childAssembly.tools.map(tool => tool.name)).not.toContain('view')
+    expect(childPrompt).toContain('Use the read tool')
+    expect(childPrompt).not.toContain('Use view')
 
     await child.dispose()
     await root.dispose()

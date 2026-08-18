@@ -81,8 +81,8 @@ preset **不能**从 YAML 里拿掉 `@deepseek-ai/dsh-tool-fs`。潜意识子代
 
 实际切开：
 
-- preset 目录里仍注册原生 `read` / `grep` / `glob`（专供潜意识）。
-- 会话根（表意识）上 `agent.ctx.tools.restrict({ deny: ['read', 'grep'] })`：模型看到的 tools 列表里没有这两项，调用报 unknown tool。
+- preset 目录里仍注册原生 `read` / `grep` / `glob`（专供潜意识）。这些行挂在 preset 的常驻层上，表意识和潜意识都会继承。
+- 真正送给模型的裁剪发生在 `system-prompt/assemble`：表意识的 tools 列表和 `tool:read` / `tool:grep` 指引都会被拿掉，并补上 `view` 说明；潜意识则相反，拿掉 `view`。只靠空 section 盖名或 `tools.restrict()` 不够——常驻层上的 `tool:read` 仍会进系统提示词。
 - `view` 内部 `ctx.subagents.start('spawn')` 打上 `label: subconscious`，`toolFilter.allow` 只有 `read` / `grep` / `glob`。
 - `tools.guard` 拦表意识用 bash/`pwsh` 读原文或文内搜索（`cat`、`head`、`rg`、`git show` 等）。`ls` / `find` / `wc` 仍可。这不是沙箱，只拦明显绕法。
 
