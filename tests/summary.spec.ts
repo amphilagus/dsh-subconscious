@@ -1,15 +1,26 @@
 import { describe, expect, it } from 'vitest'
-import { truncateSummary } from '../src/summary.ts'
+import { judgeSummary } from '../src/summary.ts'
+import { OVERFLOW_REWRITE_RATIO } from '../src/constants.ts'
 
-describe('truncateSummary', () => {
-  it('returns the original text when it fits', () => {
-    expect(truncateSummary('short', 100)).toEqual({ summary: 'short', truncated: false })
+describe('judgeSummary', () => {
+  it('accepts text that fits the budget', () => {
+    expect(judgeSummary('short', 100)).toEqual({ action: 'accept' })
   })
 
-  it('cuts to the budget and marks truncated', () => {
-    const result = truncateSummary('a'.repeat(50), 20)
-    expect(result.truncated).toBe(true)
-    expect(result.summary.length).toBeLessThanOrEqual(20)
-    expect(result.summary.endsWith('[truncated]')).toBe(true)
+  it('accepts overflow below the rewrite ratio', () => {
+    const maxChars = 20
+    const mild = 'a'.repeat(Math.floor(maxChars * 1.2))
+    expect(mild.length).toBeLessThanOrEqual(maxChars * OVERFLOW_REWRITE_RATIO)
+    expect(judgeSummary(mild, maxChars)).toEqual({ action: 'accept' })
+  })
+
+  it('requests a rewrite when overflow is at least 50%', () => {
+    const maxChars = 20
+    const heavy = 'a'.repeat(Math.floor(maxChars * OVERFLOW_REWRITE_RATIO) + 1)
+    expect(judgeSummary(heavy, maxChars)).toEqual({
+      action: 'rewrite',
+      maxChars,
+      actualChars: heavy.length,
+    })
   })
 })

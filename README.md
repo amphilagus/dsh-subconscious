@@ -107,7 +107,7 @@ host 上的 spawn **服务**仍在；关掉的是模型侧 delegation 工具。`
 |---|---|---|
 | `enabled` | host 上 `false`；本 preset 必须 `true` | 主开关 |
 | `viewToolName` | `view` | 表意识看到的工具名 |
-| `maxSummaryTokens` | `1000` | 潜意识返回摘要的上限（写入 prompt，返回后再按约 4 字符/token 硬截） |
+| `maxSummaryTokens` | `1000` | 潜意识摘要字数预算（约 4 字符/token）。超预算 50% 会再收一版；小幅超标原样返回，不切片 |
 
 改完 preset 文件后新开的会话才会用新组合；已在跑的会话保持启动时那一版。
 

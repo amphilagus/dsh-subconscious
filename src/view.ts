@@ -8,6 +8,7 @@ import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
 import type { ObjectJsonSchema } from '@deepseek-ai/dsh-tools'
 import { defineTool } from '@deepseek-ai/dsh-tools'
+import type { SubagentResult, SubagentStartRequest } from '@deepseek-ai/dsh-subagent'
 import type { ResolvedConfig } from './config.ts'
 import { maxSummaryChars } from './config.ts'
 import {
@@ -16,15 +17,14 @@ import {
   SUBCONSCIOUS_TOOL_ALLOW,
   VIEW_TIMEOUT_MS,
 } from './constants.ts'
-import { buildSubconsciousPrompt, SUBCONSCIOUS_PERSONA } from './persona.ts'
-import { truncateSummary } from './summary.ts'
+import { buildCompressPrompt, buildSubconsciousPrompt, SUBCONSCIOUS_PERSONA } from './persona.ts'
+import { judgeSummary } from './summary.ts'
 
 /** Canonical value returned to the conscious agent. */
 export interface ViewOutcome {
   readonly summary: string
   readonly filesConsulted: readonly string[]
   readonly gaps: readonly string[]
-  readonly truncated: boolean
 }
 
 const VIEW_OUTPUT_SCHEMA = {
@@ -34,7 +34,6 @@ const VIEW_OUTPUT_SCHEMA = {
     summary: { type: 'string', required: true },
     filesConsulted: { type: 'array', required: true, items: { type: 'string' } },
     gaps: { type: 'array', required: true, items: { type: 'string' } },
-    truncated: { type: 'boolean', required: true },
   },
 } as const
 
@@ -48,6 +47,12 @@ export const SUBCONSCIOUS_OUTPUT_SCHEMA: ObjectJsonSchema = {
     gaps: { type: 'array', items: { type: 'string' } },
   },
   required: ['summary', 'filesConsulted', 'gaps'],
+}
+
+interface ObserverCapture {
+  readonly summary: string
+  readonly filesConsulted: readonly string[]
+  readonly gaps: string[]
 }
 
 function nonEmpty(value: string, field: string): string {
@@ -99,8 +104,58 @@ function renderView(_args: unknown, value: ViewOutcome): ContentBlock[] {
   const gaps = value.gaps.length > 0
     ? `\nGaps: ${value.gaps.join('; ')}`
     : ''
-  const truncated = value.truncated ? '\n[summary truncated to the configured token cap]' : ''
-  return [{ type: 'text', text: `${value.summary}${consulted}${gaps}${truncated}` }]
+  return [{ type: 'text', text: `${value.summary}${consulted}${gaps}` }]
+}
+
+function observerStart(parent: Agent, signal: AbortSignal, prompt: string): SubagentStartRequest {
+  return {
+    label: SUBCONSCIOUS_LABEL,
+    prompt: [{ type: 'text', text: prompt }],
+    parent,
+    signal,
+    maxDepth: SUBCONSCIOUS_MAX_DEPTH,
+    persona: SUBCONSCIOUS_PERSONA,
+    toolFilter: { allow: [...SUBCONSCIOUS_TOOL_ALLOW] },
+    outputSchema: SUBCONSCIOUS_OUTPUT_SCHEMA,
+  }
+}
+
+function captureFromResult(
+  result: SubagentResult,
+  fallbackPaths: readonly string[],
+  toolName: string,
+): ObserverCapture {
+  const captured = structuredSummary(result.structured)
+  const summary = captured?.summary.trim() || textOf(result.output)
+  if (summary.length === 0) {
+    const reason = result.stopReason === 'completed' ? 'empty observer output' : result.stopReason
+    throw new Error(`${toolName} observer failed (${reason})`)
+  }
+  const gaps = [...(captured?.gaps ?? [])]
+  if (result.stopReason !== 'completed' && !gaps.includes(result.stopReason)) {
+    gaps.push(`observer stopReason=${result.stopReason}`)
+  }
+  return {
+    summary,
+    filesConsulted: captured?.filesConsulted ?? fallbackPaths,
+    gaps,
+  }
+}
+
+async function runObserver(
+  hostCtx: Context,
+  parent: Agent,
+  signal: AbortSignal,
+  prompt: string,
+  fallbackPaths: readonly string[],
+  toolName: string,
+): Promise<ObserverCapture> {
+  const run = await hostCtx.subagents.start('spawn', observerStart(parent, signal, prompt))
+  try {
+    return captureFromResult(await run.result, fallbackPaths, toolName)
+  } finally {
+    await run.dispose()
+  }
 }
 
 /**
@@ -151,46 +206,49 @@ export function registerViewTool(hostCtx: Context, agentCtx: Context, config: Re
       const paths = normalizePaths(args.paths)
       const purpose = nonEmpty(args.purpose, 'purpose')
       const background = nonEmpty(args.background, 'background')
-      const prompt = buildSubconsciousPrompt({
-        paths,
-        purpose,
-        background,
-        maxSummaryTokens: config.maxSummaryTokens,
-      })
-
-      const run = await hostCtx.subagents.start('spawn', {
-        label: SUBCONSCIOUS_LABEL,
-        prompt: [{ type: 'text', text: prompt }],
+      const maxChars = maxSummaryChars(config.maxSummaryTokens)
+      const first = await runObserver(
+        hostCtx,
         parent,
-        signal: exec.signal,
-        maxDepth: SUBCONSCIOUS_MAX_DEPTH,
-        persona: SUBCONSCIOUS_PERSONA,
-        toolFilter: { allow: [...SUBCONSCIOUS_TOOL_ALLOW] },
-        outputSchema: SUBCONSCIOUS_OUTPUT_SCHEMA,
-      })
+        exec.signal,
+        buildSubconsciousPrompt({ paths, purpose, background, maxChars }),
+        paths,
+        config.viewToolName,
+      )
 
-      try {
-        const result = await run.result
-        const captured = structuredSummary(result.structured)
-        const raw = captured?.summary.trim() || textOf(result.output)
-        if (raw.length === 0) {
-          const reason = result.stopReason === 'completed' ? 'empty observer output' : result.stopReason
-          throw new Error(`${config.viewToolName} observer failed (${reason})`)
-        }
-        const truncated = truncateSummary(raw, maxSummaryChars(config.maxSummaryTokens))
-        const gaps = [...(captured?.gaps ?? [])]
-        if (result.stopReason !== 'completed' && !gaps.includes(result.stopReason)) {
-          gaps.push(`observer stopReason=${result.stopReason}`)
-        }
+      if (judgeSummary(first.summary, maxChars).action === 'accept') {
         return {
-          summary: truncated.summary,
-          filesConsulted: captured?.filesConsulted ?? paths,
-          gaps,
-          truncated: truncated.truncated,
+          summary: first.summary,
+          filesConsulted: [...first.filesConsulted],
+          gaps: first.gaps,
         } satisfies ViewOutcome
-      } finally {
-        await run.dispose()
       }
+
+      const rewritten = await runObserver(
+        hostCtx,
+        parent,
+        exec.signal,
+        buildCompressPrompt({
+          purpose,
+          previousSummary: first.summary,
+          filesConsulted: first.filesConsulted,
+          gaps: first.gaps,
+          maxChars,
+          actualChars: first.summary.length,
+        }),
+        first.filesConsulted,
+        config.viewToolName,
+      )
+      const gaps = [...rewritten.gaps]
+      if (judgeSummary(rewritten.summary, maxChars).action === 'rewrite') {
+        const note = `summary still over budget after rewrite (${rewritten.summary.length} chars, cap ${maxChars})`
+        if (!gaps.includes(note)) gaps.push(note)
+      }
+      return {
+        summary: rewritten.summary,
+        filesConsulted: [...rewritten.filesConsulted],
+        gaps,
+      } satisfies ViewOutcome
     },
   }))
 }

@@ -28,12 +28,14 @@ export {
   SUBCONSCIOUS_LABEL,
   DEFAULT_VIEW_TOOL_NAME,
   DEFAULT_MAX_SUMMARY_TOKENS,
+  OVERFLOW_REWRITE_RATIO,
   SUBCONSCIOUS_TOOL_ALLOW,
   CONSCIOUS_DENY_TOOLS,
 } from './constants.ts'
-export { SUBCONSCIOUS_PERSONA, buildSubconsciousPrompt } from './persona.ts'
+export { SUBCONSCIOUS_PERSONA, buildSubconsciousPrompt, buildCompressPrompt } from './persona.ts'
 export { looksLikeFileContentReadCommand } from './shell-read.ts'
-export { truncateSummary } from './summary.ts'
+export { judgeSummary } from './summary.ts'
+export type { SummaryJudgement } from './summary.ts'
 export { SUBCONSCIOUS_OUTPUT_SCHEMA } from './view.ts'
 export type { ViewOutcome } from './view.ts'
 
@@ -49,16 +51,22 @@ function denyExisting(agent: Agent, names: readonly string[]): void {
   agent.ctx.tools.restrict({ deny })
 }
 
+/** Nearest-scope empty section drops an inherited `tool:<name>` guidance band. */
+function blankToolSections(agent: Agent, toolNames: readonly string[]): void {
+  for (const toolName of toolNames) {
+    agent.ctx.systemPrompt.section({ name: `tool:${toolName}`, order: 100, text: '' })
+  }
+}
+
 function installRootGuidance(agent: Agent, config: ReturnType<typeof resolveConfig>): void {
+  blankToolSections(agent, CONSCIOUS_DENY_TOOLS)
   agent.ctx.systemPrompt.section({
-    name: 'tool:read',
-    order: 100,
-    text: `Do not use read. Call ${config.viewToolName} with paths, purpose, and background (what you are doing and what you will do next).`,
-  })
-  agent.ctx.systemPrompt.section({
-    name: 'tool:grep',
-    order: 104,
-    text: `Do not use grep to search file contents. Call ${config.viewToolName} and state the search as purpose.`,
+    name: `tool:${config.viewToolName}`,
+    order: 101,
+    text:
+      `Use ${config.viewToolName} to inspect file contents. It is exclusive — you cannot run other tools until it returns. `
+      + 'background is your mental state before opening the files; purpose is what this glance must answer. '
+      + 'You receive a bounded summary, not the raw file.',
   })
 }
 
@@ -77,26 +85,22 @@ export function apply(ctx: Context, config: Config = {}): void {
 
   registerContentReadGuard(ctx, resolved)
   registerViewTool(ctx, ctx, resolved)
-  ctx.systemPrompt.section({
-    name: `tool:${resolved.viewToolName}`,
-    order: 101,
-    text:
-      `Use ${resolved.viewToolName} to inspect file contents. It is exclusive — you cannot run other tools until it returns. `
-      + 'background is your mental state before opening the files; purpose is what this glance must answer. '
-      + 'You receive a bounded summary, not the raw file.',
-  })
 
-  const rooted = new WeakSet<Agent>()
+  const prompted = new WeakSet<Agent>()
   const mask = ({ agent }: { agent: Agent }): void => {
     if (ctx.agents.roots().includes(agent)) {
       denyExisting(agent, CONSCIOUS_DENY_TOOLS)
-      if (!rooted.has(agent)) {
-        rooted.add(agent)
+      if (!prompted.has(agent)) {
+        prompted.add(agent)
         installRootGuidance(agent, resolved)
       }
       return
     }
     denyExisting(agent, [resolved.viewToolName])
+    if (!prompted.has(agent)) {
+      prompted.add(agent)
+      blankToolSections(agent, [resolved.viewToolName])
+    }
   }
   ctx.on('agent/created', mask)
   // tool-fs may settle after the first created observer; session-start retries the mask.
